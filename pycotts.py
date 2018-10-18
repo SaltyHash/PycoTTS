@@ -8,12 +8,15 @@ For example, on Debian, these packages could be installed using:
     $ sudo apt-get install libttspico-utils alsa-utils
 """
 
+import re
 import subprocess
 
 from collections import namedtuple
 from queue import Empty, Queue
+from shutil import which
 from tempfile import NamedTemporaryFile
 from threading import Thread
+from typing import Iterable, Tuple
 
 _Message = namedtuple('_Message', ('text', 'language', 'volume', 'pitch', 'speed'))
 
@@ -77,31 +80,68 @@ class _PycoTTSWorker(Thread):
                 self._run_command(['aplay', wav_file.name])
 
 
+class ExecutableNotFoundError(Exception):
+    __slots__ = (
+        'executable'
+    )
+
+    def __init__(self, executable: str):
+        Exception.__init__(self, f'Could not find executable "{executable}".')
+        self.executable = executable
+
+
 class PycoTTS(object):
     __slots__ = (
         'language',
         'volume',
         'pitch',
         'speed',
+        'replacements',
 
         '__message_queue',
         '__worker'
     )
 
     def __init__(self, language: str = None, volume: int = None, pitch: int = None, speed: int = None):
+        """
+        :raises ExecutableNotFoundError: pico2wave or aplay executable could not be found.
+        """
+        # Make sure pico2wave and aplay exist
+        for executable in ('pico2wave', 'aplay'):
+            if not which(executable):
+                raise ExecutableNotFoundError(executable)
+
         self.language = language
         self.volume = volume
         self.pitch = pitch
         self.speed = speed
 
+        self.replacements = []
+
         self.__message_queue = Queue()
         self.__worker: Thread = None
+
+    def add_replacement(self, pattern: str, replacement: str):
+        """
+        All occurrences of the `pattern` will be replaced by the `replacement` string before speaking a message.
+
+        :param pattern: Regex pattern to be replaced.
+        :param replacement: Text to be substituted in for the pattern.
+        """
+        self.replacements.append((pattern, replacement))
+
+    def add_replacements(self, replacements: Iterable[Tuple[str, str]]):
+        self.replacements.extend(replacements)
 
     def speak(
             self, message_text: str,
             language: str = None, volume: int = None, pitch: int = None, speed: int = None,
             wait: bool = True, timeout: float = None
     ):
+        # Make replacements
+        for pattern, replacement in self.replacements:
+            message_text = re.sub(pattern, replacement, message_text)
+
         # Build the message object
         message = _Message(
             message_text,
